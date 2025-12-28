@@ -29,6 +29,20 @@ logging.basicConfig(filename=LOG_FILE, level=logging.ERROR,
                     format='%(asctime)s - %(message)s')
 
 # ==========================================
+# Helper Functions
+# ==========================================
+def get_valid_value(meta, candidates):
+    """
+    Checks a list of column names in the metadata dictionary
+    and returns the first non-NaN value found.
+    """
+    for col in candidates:
+        val = meta.get(col, np.nan)
+        if val is not None and not np.isnan(val):
+            return val
+    return np.nan
+
+# ==========================================
 # Worker Function
 # ==========================================
 def process_star(args):
@@ -56,10 +70,10 @@ def process_star(args):
         # Remove outliers (sigma=3)
         lc = lc.remove_outliers(sigma=3)
         
-        # Metadata extraction
-        period = meta.get('period', np.nan)
-        t0 = meta.get('epoch', np.nan)
-        duration_hours = meta.get('koi_duration', np.nan)
+        # Metadata extraction with Smart Fallback
+        period = get_valid_value(meta, ['period', 'koi_period', 'pl_orbper', 'tce_period'])
+        t0 = get_valid_value(meta, ['epoch', 'koi_time0bk', 'pl_tranmid', 'tce_time0bk', 't0'])
+        duration_hours = get_valid_value(meta, ['koi_duration', 'pl_trandurh', 'tce_duration', 'duration'])
         
         # Validation
         if np.isnan(period) or np.isnan(t0) or np.isnan(duration_hours):
@@ -114,19 +128,37 @@ def process_star(args):
         # 5. Scalars
         # [Period, Duration, Depth, Prad, Srad, Teff, logg]
         scalars = np.array([
-            meta.get('period', 0),
-            meta.get('koi_duration', 0),
-            meta.get('koi_depth', 0),
-            meta.get('koi_prad', 0),
-            meta.get('koi_srad', 0),
-            meta.get('koi_steff', 0),
-            meta.get('koi_slogg', 0)
+            period,
+            duration_hours,
+            get_valid_value(meta, ['koi_depth', 'pl_trandep', 'tce_depth']),
+            get_valid_value(meta, ['koi_prad', 'pl_rade', 'tce_prad']),
+            get_valid_value(meta, ['koi_srad', 'st_rad', 'tce_sradius']),
+            get_valid_value(meta, ['koi_steff', 'st_teff', 'tce_steff']),
+            get_valid_value(meta, ['koi_slogg', 'st_logg', 'tce_slogg'])
         ])
         # Replace NaNs with 0
         scalars = np.nan_to_num(scalars, nan=0.0)
 
         # 6. Label
-        label = 1 if meta.get('koi_disposition') == 'CONFIRMED' else 0
+        # Check multiple disposition columns
+        disposition = get_valid_value(meta, ['koi_disposition', 'tfopwg_disp', 'koi_pdisposition'])
+        # For TOI, 'CONFIRMED' might be 'CP' (Confirmed Planet) or 'KP' (Known Planet) or similar.
+        # Adjusting logic to be broader if needed, but sticking to 'CONFIRMED' for now as per existing logic, 
+        # or checking if it contains 'CONFIRMED' or 'CANDIDATE' if we were doing multi-class.
+        # Assuming binary classification: Confirmed vs False Positive/Candidate?
+        # The original code was: label = 1 if meta.get('koi_disposition') == 'CONFIRMED' else 0
+        # Let's expand it slightly for TOI if possible, but user didn't explicitly ask for label logic change, 
+        # just "correctly parsing metadata". 
+        # However, if we don't fix label logic, TOIs might all be 0.
+        # TOI dispositions: 'KP' (Known Planet), 'CP' (Confirmed Planet).
+        
+        is_confirmed = False
+        if isinstance(disposition, str):
+            disp_upper = disposition.upper()
+            if 'CONFIRMED' in disp_upper or disp_upper in ['CP', 'KP']:
+                is_confirmed = True
+        
+        label = 1 if is_confirmed else 0
 
         # 7. Save
         # Use Period in filename to allow multiple planets per star
@@ -171,8 +203,27 @@ def main():
     
     # Create metadata lookup dictionary
     # Structure: { target_id: [ {candidate1_meta}, {candidate2_meta}, ... ] }
-    cols_to_keep = ['target_id', 'period', 'epoch', 'koi_duration', 'koi_depth', 
-                    'koi_prad', 'koi_srad', 'koi_steff', 'koi_slogg', 'koi_disposition']
+    cols_to_keep = [
+        'target_id', 
+        # Period
+        'period', 'koi_period', 'pl_orbper', 'tce_period',
+        # Epoch
+        'epoch', 'koi_time0bk', 'pl_tranmid', 'tce_time0bk', 't0',
+        # Duration
+        'koi_duration', 'pl_trandurh', 'tce_duration', 'duration',
+        # Depth
+        'koi_depth', 'pl_trandep', 'tce_depth',
+        # Prad
+        'koi_prad', 'pl_rade', 'tce_prad',
+        # Srad
+        'koi_srad', 'st_rad', 'tce_sradius',
+        # Teff
+        'koi_steff', 'st_teff', 'tce_steff',
+        # Logg
+        'koi_slogg', 'st_logg', 'tce_slogg',
+        # Disposition
+        'koi_disposition', 'tfopwg_disp', 'koi_pdisposition'
+    ]
     
     available_cols = [c for c in cols_to_keep if c in df.columns]
     

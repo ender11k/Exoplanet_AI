@@ -1,6 +1,5 @@
 # Data
 data/
-notebooks/results_koi/
 .lightkurve/
 logs/
 
