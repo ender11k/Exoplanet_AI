@@ -1,0 +1,9 @@
+numpy
+pandas
+lightkurve
+tqdm
+scikit-learn
+scipy
+requests
+xgboost
+tensorflow

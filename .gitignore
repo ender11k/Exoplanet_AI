@@ -1,0 +1,17 @@
+# Data
+data/
+notebooks/results_koi/
+.lightkurve/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.h5
+
+# VS Code
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
