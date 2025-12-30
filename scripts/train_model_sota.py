@@ -6,12 +6,11 @@ from tensorflow.keras import layers, models, optimizers, callbacks, regularizers
 from tensorflow.keras.utils import Sequence
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
-from sklearn.utils import class_weight
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 
-# Set random seeds
+# Set random seeds for reproducibility
 np.random.seed(42)
 tf.random.set_seed(42)
 
@@ -26,14 +25,33 @@ IMG_SHAPE_LOCAL = (201, 1)
 SCALAR_SHAPE = (7,)
 
 # ==========================================
-# Robust Data Generator with Augmentation
+# Robust Data Generator (Balanced)
 # ==========================================
 class ExoplanetDataGenerator(Sequence):
-    def __init__(self, file_paths, batch_size=32, shuffle=True, augment=False):
-        self.file_paths = file_paths
+    def __init__(self, file_paths, labels, batch_size=32, shuffle=True, augment=False, balance=False):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.augment = augment
+        
+        # --- CRITICAL: 1:1 Balancing Logic ---
+        if balance:
+            pos_indices = np.where(labels == 1)[0]
+            neg_indices = np.where(labels == 0)[0]
+            
+            # Undersample majority to match minority
+            n_samples = len(pos_indices)
+            if len(neg_indices) > n_samples:
+                neg_indices = np.random.choice(neg_indices, n_samples, replace=False)
+            
+            balanced_indices = np.concatenate([pos_indices, neg_indices])
+            np.random.shuffle(balanced_indices)
+            
+            self.file_paths = file_paths[balanced_indices]
+            self.labels = labels[balanced_indices]
+        else:
+            self.file_paths = file_paths
+            self.labels = labels
+            
         self.indices = np.arange(len(self.file_paths))
         self.on_epoch_end()
 
@@ -43,6 +61,7 @@ class ExoplanetDataGenerator(Sequence):
     def __getitem__(self, index):
         indexes = self.indices[index*self.batch_size:(index+1)*self.batch_size]
         batch_paths = [self.file_paths[k] for k in indexes]
+        batch_labels = [self.labels[k] for k in indexes]
 
         X_global = []
         X_local = []
@@ -55,51 +74,31 @@ class ExoplanetDataGenerator(Sequence):
                     g_view = data['global_view']
                     l_view = data['local_view']
                     scalars = data['scalars']
-                    label = data['label']
-
+                    
                     if g_view.shape != IMG_SHAPE_GLOBAL:
-                        raise ValueError(f"Global shape mismatch: {g_view.shape}")
+                        continue # Skip bad shapes
                     
                     # Augmentation
                     if self.augment:
-                        # 1. Time Mirroring (50% chance)
-                        if np.random.rand() > 0.5:
+                        if np.random.rand() > 0.5: # Flip
                             g_view = np.flip(g_view, axis=0)
                             l_view = np.flip(l_view, axis=0)
                         
-                        # 2. Time Shifting (Roll)
-                        shift = np.random.randint(-5, 6)
+                        shift = np.random.randint(-5, 6) # Roll
                         g_view = np.roll(g_view, shift, axis=0)
                         l_view = np.roll(l_view, shift, axis=0)
                         
-                        # 3. Flux Jitter
-                        jitter = np.random.uniform(0.99, 1.01)
+                        jitter = np.random.uniform(0.99, 1.01) # Jitter
                         g_view = g_view * jitter
                         l_view = l_view * jitter
-                        
-                        # 4. Gaussian Noise
-                        noise_g = np.random.normal(0, 0.001, g_view.shape)
-                        noise_l = np.random.normal(0, 0.001, l_view.shape)
-                        g_view = g_view + noise_g
-                        l_view = l_view + noise_l
 
                     X_global.append(g_view)
                     X_local.append(l_view)
                     X_scalar.append(scalars)
-                    y.append(label)
+                    y.append(batch_labels[i])
 
-            except Exception as e:
-                print(f"[Warning] Corrupt file {path}: {e}")
-                if len(X_global) > 0:
-                    X_global.append(X_global[-1])
-                    X_local.append(X_local[-1])
-                    X_scalar.append(X_scalar[-1])
-                    y.append(y[-1])
-                else:
-                    X_global.append(np.zeros(IMG_SHAPE_GLOBAL))
-                    X_local.append(np.zeros(IMG_SHAPE_LOCAL))
-                    X_scalar.append(np.zeros(SCALAR_SHAPE))
-                    y.append(0)
+            except Exception:
+                continue
 
         return (np.array(X_global), np.array(X_local), np.array(X_scalar)), np.array(y)
 
@@ -108,204 +107,159 @@ class ExoplanetDataGenerator(Sequence):
             np.random.shuffle(self.indices)
 
 # ==========================================
-# SOTA Model Architecture
+# Transformer Block Helper
 # ==========================================
-def build_hybrid_model():
-    l2_reg = regularizers.l2(0.00001)
+def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
+    # Attention and Normalization
+    x = layers.MultiHeadAttention(key_dim=head_size, num_heads=num_heads, dropout=dropout)(inputs, inputs)
+    x = layers.Dropout(dropout)(x)
+    x = layers.LayerNormalization(epsilon=1e-6)(x)
+    res = x + inputs
 
-    # Branch 1: Global Morphological Tower (CNN)
+    # Feed Forward Part
+    x = layers.Conv1D(filters=ff_dim, kernel_size=1, activation="relu")(res)
+    x = layers.Dropout(dropout)(x)
+    x = layers.Conv1D(filters=inputs.shape[-1], kernel_size=1)(x)
+    x = layers.LayerNormalization(epsilon=1e-6)(x)
+    return x + res
+
+# ==========================================
+# SOTA Model Architecture (CNN + Transformer)
+# ==========================================
+def build_transformer_model():
+    l2_reg = regularizers.l2(1e-5)
+
+    # --- Branch 1: Global Transformer ---
     input_global = layers.Input(shape=IMG_SHAPE_GLOBAL, name='global_input')
-    x1 = layers.Conv1D(16, 3, padding='same', kernel_regularizer=l2_reg)(input_global)
+    x1 = layers.Conv1D(32, 7, padding='same', activation='relu')(input_global)
+    x1 = layers.MaxPooling1D(4)(x1)
     x1 = layers.BatchNormalization()(x1)
-    x1 = layers.ReLU()(x1)
-    x1 = layers.MaxPooling1D(2)(x1)
     
-    x1 = layers.Conv1D(32, 3, padding='same', kernel_regularizer=l2_reg)(x1)
-    x1 = layers.BatchNormalization()(x1)
-    x1 = layers.ReLU()(x1)
-    x1 = layers.MaxPooling1D(2)(x1)
-    
-    x1 = layers.Conv1D(64, 3, padding='same', kernel_regularizer=l2_reg)(x1)
-    x1 = layers.BatchNormalization()(x1)
-    x1 = layers.ReLU()(x1)
-    x1 = layers.MaxPooling1D(2)(x1)
-    
-    # Dual Pooling
-    x1_avg = layers.GlobalAveragePooling1D()(x1)
-    x1_max = layers.GlobalMaxPooling1D()(x1)
-    x1 = layers.Concatenate()([x1_avg, x1_max])
+    # Transformer Block
+    x1 = transformer_encoder(x1, head_size=32, num_heads=2, ff_dim=32, dropout=0.1)
+    x1 = layers.GlobalAveragePooling1D()(x1)
 
-    # Branch 2: Local Morphological Tower (CNN)
+    # --- Branch 2: Local CNN ---
     input_local = layers.Input(shape=IMG_SHAPE_LOCAL, name='local_input')
-    x2 = layers.Conv1D(16, 3, padding='same', kernel_regularizer=l2_reg)(input_local)
-    x2 = layers.BatchNormalization()(x2)
-    x2 = layers.ReLU()(x2)
+    x2 = layers.Conv1D(16, 3, padding='same', activation='relu')(input_local)
     x2 = layers.MaxPooling1D(2)(x2)
-    
-    x2 = layers.Conv1D(32, 3, padding='same', kernel_regularizer=l2_reg)(x2)
     x2 = layers.BatchNormalization()(x2)
-    x2 = layers.ReLU()(x2)
-    x2 = layers.MaxPooling1D(2)(x2)
-    
-    # Dual Pooling
-    x2_avg = layers.GlobalAveragePooling1D()(x2)
-    x2_max = layers.GlobalMaxPooling1D()(x2)
-    x2 = layers.Concatenate()([x2_avg, x2_max])
+    x2 = layers.Conv1D(32, 3, padding='same', activation='relu')(x2)
+    x2 = layers.GlobalMaxPooling1D()(x2)
 
-    # Branch 3: Physical Context Tower (Dense + In-Network Norm)
+    # --- Branch 3: Scalars ---
     input_scalar = layers.Input(shape=SCALAR_SHAPE, name='scalar_input')
     x3 = layers.BatchNormalization()(input_scalar)
-    x3 = layers.Dense(16, kernel_regularizer=l2_reg)(x3)
-    x3 = layers.ReLU()(x3)
-    x3 = layers.Dropout(0.3)(x3)
+    x3 = layers.Dense(16, activation='relu', kernel_regularizer=l2_reg)(x3)
 
-    # Fusion Block
+    # --- Fusion ---
     concatenated = layers.Concatenate()([x1, x2, x3])
-    fusion = layers.Dense(64, kernel_regularizer=l2_reg)(concatenated)
-    fusion = layers.ReLU()(fusion)
-    fusion = layers.Dropout(0.4)(fusion)
+    fusion = layers.Dense(64, activation='relu', kernel_regularizer=l2_reg)(concatenated)
+    fusion = layers.Dropout(0.3)(fusion)
     
-    output = layers.Dense(1, activation='sigmoid', name='output', kernel_regularizer=l2_reg)(fusion)
+    output = layers.Dense(1, activation='sigmoid', name='output')(fusion)
 
     model = models.Model(inputs=[input_global, input_local, input_scalar], outputs=output)
     
-    # Label Smoothing in Loss
-    model.compile(optimizer=optimizers.Adam(learning_rate=0.001),
-                  loss=tf.keras.losses.BinaryCrossentropy(),
+    # Standard Binary Crossentropy (Best for balanced data)
+    model.compile(optimizer=optimizers.Adam(learning_rate=1e-4),
+                  loss='binary_crossentropy',
                   metrics=['accuracy', tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.AUC(name='auc')])
     return model
 
 # ==========================================
-# Main Pipeline
+# Main Execution
 # ==========================================
 def main():
-    print("[INFO] Starting SOTA Training Pipeline...")
+    print("[INFO] Starting Transformer-SOTA Training...")
     
-    # 1. Pre-Scan
-    print("[INFO] Scanning .npz files to collect labels...")
+    # 1. Scan Data
     all_files = glob.glob(os.path.join(DATA_DIR, "*.npz"))
-    
-    if not all_files:
-        print(f"[Error] No .npz files found in {DATA_DIR}")
-        return
-
     valid_files = []
     valid_labels = []
     
+    print("[INFO] Indexing files...")
     for f in tqdm(all_files):
         try:
             with np.load(f) as data:
                 if 'label' in data:
                     valid_labels.append(data['label'])
                     valid_files.append(f)
-        except Exception:
-            continue
+        except: continue
             
     valid_files = np.array(valid_files)
     valid_labels = np.array(valid_labels)
     
-    print(f"[INFO] Successfully indexed {len(valid_files)} samples.")
-    unique, counts = np.unique(valid_labels, return_counts=True)
-    print(f"[INFO] Class Distribution: {dict(zip(unique, counts))}")
+    print(f"[INFO] Found {len(valid_files)} samples.")
+    print(f"[INFO] Distribution: {dict(zip(*np.unique(valid_labels, return_counts=True)))}")
 
-    # 2. Stratified K-Fold
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # 2. Train on Fold 1 (Single Fold for SOTA Run)
+    # Using 80/20 Split
+    split_idx = int(len(valid_files) * 0.8)
+    indices = np.arange(len(valid_files))
+    np.random.shuffle(indices)
     
-    for fold, (train_idx, val_idx) in enumerate(skf.split(valid_files, valid_labels)):
-        print(f"\n[INFO] Training Fold {fold+1}/5")
-        
-        X_train_paths, y_train = valid_files[train_idx], valid_labels[train_idx]
-        X_val_paths, y_val = valid_files[val_idx], valid_labels[val_idx]
-        
-        weights = class_weight.compute_class_weight('balanced', classes=np.unique(valid_labels), y=y_train)
-        class_weights = dict(enumerate(weights))
-        
-        # Boost Planet Sensitivity (Class 1)
-        class_weights[1] = class_weights[1] * 1.5
-        
-        print(f"[INFO] Class Weights: {class_weights}")
+    train_idx, val_idx = indices[:split_idx], indices[split_idx:]
+    
+    X_train_paths, y_train = valid_files[train_idx], valid_labels[train_idx]
+    X_val_paths, y_val = valid_files[val_idx], valid_labels[val_idx]
 
-        # Generators - Enable Augmentation for Training
-        train_gen = ExoplanetDataGenerator(X_train_paths, batch_size=BATCH_SIZE, shuffle=True, augment=True)
-        val_gen = ExoplanetDataGenerator(X_val_paths, batch_size=BATCH_SIZE, shuffle=False, augment=False)
+    # Generators (Balanced!)
+    train_gen = ExoplanetDataGenerator(X_train_paths, y_train, batch_size=BATCH_SIZE, shuffle=True, augment=True, balance=True)
+    val_gen = ExoplanetDataGenerator(X_val_paths, y_val, batch_size=BATCH_SIZE, shuffle=False, augment=False, balance=False)
 
-        # Build & Train
-        model = build_hybrid_model()
+    print(f"[INFO] Training Steps per Epoch: {len(train_gen)}")
+
+    # 3. Build & Train
+    model = build_transformer_model()
+    
+    callbacks_list = [
+        # Save the model with the highest AUC (separation power)
+        callbacks.ModelCheckpoint("best_model_transformer.keras", save_best_only=True, monitor='val_auc', mode='max'),
         
-        callbacks_list = [
-            callbacks.ModelCheckpoint(f"best_model_fold_{fold+1}.h5", save_best_only=True, monitor='val_loss'),
-            callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, verbose=1),
-            callbacks.EarlyStopping(monitor='val_loss', patience=12, restore_best_weights=True, verbose=1)
-        ]
+        # Reduce LR if AUC stops improving
+        callbacks.ReduceLROnPlateau(monitor='val_auc', factor=0.5, patience=3, verbose=1, mode='max'),
         
-        history = model.fit(
-            train_gen,
-            validation_data=val_gen,
-            epochs=EPOCHS,
-            callbacks=callbacks_list,
-            class_weight=class_weights,
-            verbose=1
-        )
+        # Stop if AUC doesn't improve for 15 epochs
+        callbacks.EarlyStopping(monitor='val_auc', patience=15, restore_best_weights=True, verbose=1, mode='max')
+    ]
+    
+    # NO CLASS WEIGHTS (Balancing is handled by Generator)
+    history = model.fit(
+        train_gen,
+        validation_data=val_gen,
+        epochs=EPOCHS,
+        callbacks=callbacks_list,
+        verbose=1
+    )
+    
+    # 4. Evaluation
+    print("[INFO] Evaluating...")
+    y_true = []
+    y_pred_prob = []
+    
+    for i in range(len(val_gen)):
+        X_batch, y_batch = val_gen[i]
+        preds = model.predict_on_batch(X_batch)
+        y_true.extend(y_batch)
+        y_pred_prob.extend(preds.flatten())
         
-        # 3. Evaluation & Deliverables
-        print("[INFO] Generating Advanced Deliverables...")
-        
-        y_true = []
-        y_pred_prob = []
-        
-        for i in range(len(val_gen)):
-            X_batch, y_batch = val_gen[i]
-            preds = model.predict_on_batch(X_batch)
-            y_true.extend(y_batch)
-            y_pred_prob.extend(preds.flatten())
-            
-        y_true = np.array(y_true)
-        y_pred_prob = np.array(y_pred_prob)
-        y_pred_class = (y_pred_prob > 0.5).astype(int)
-        
-        # A. Confusion Matrices
-        cm = confusion_matrix(y_true, y_pred_class)
-        cm_norm = confusion_matrix(y_true, y_pred_class, normalize='true')
-        
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0])
-        axes[0].set_title('Confusion Matrix (Counts)')
-        axes[0].set_xlabel('Predicted')
-        axes[0].set_ylabel('Actual')
-        
-        sns.heatmap(cm_norm, annot=True, fmt='.2%', cmap='Greens', ax=axes[1])
-        axes[1].set_title('Confusion Matrix (Normalized)')
-        axes[1].set_xlabel('Predicted')
-        axes[1].set_ylabel('Actual')
-        
-        plt.tight_layout()
-        plt.savefig('confusion_matrix_advanced.png')
-        print("Saved confusion_matrix_advanced.png")
-        
-        # B. ROC Curve
-        fpr, tpr, _ = roc_curve(y_true, y_pred_prob)
-        roc_auc = auc(fpr, tpr)
-        
-        plt.figure(figsize=(6, 6))
-        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC (AUC = {roc_auc:.2f})')
-        plt.plot([0, 1], [0, 1], color='navy', linestyle='--')
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        plt.title('ROC Curve')
-        plt.legend()
-        plt.savefig('roc_curve.png')
-        print("Saved roc_curve.png")
-        
-        # C. Classification Report
-        report = classification_report(y_true, y_pred_class, target_names=['False Positive', 'Planet'])
-        print("\n" + report)
-        
-        with open("classification_report.txt", "w") as f:
-            f.write(report)
-        print("Saved classification_report.txt")
-        
-        break
+    y_true = np.array(y_true)
+    y_pred_prob = np.array(y_pred_prob)
+    y_pred_class = (y_pred_prob > 0.5).astype(int)
+    
+    # Report
+    print(classification_report(y_true, y_pred_class, target_names=['False Positive', 'Planet']))
+    
+    # Confusion Matrix
+    cm = confusion_matrix(y_true, y_pred_class)
+    plt.figure(figsize=(6,5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.title('Confusion Matrix (Transformer Model)')
+    plt.ylabel('Actual')
+    plt.xlabel('Predicted')
+    plt.savefig('confusion_matrix_sota.png')
+    print("Saved confusion_matrix_sota.png")
 
 if __name__ == "__main__":
     main()
