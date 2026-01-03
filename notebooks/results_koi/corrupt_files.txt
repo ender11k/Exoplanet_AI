@@ -1,0 +1,1 @@
+notebooks/results_koi\KIC_10920420_P0.94.npz

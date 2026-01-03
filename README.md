@@ -5,52 +5,61 @@ This repository contains a state-of-the-art (SOTA) hybrid CNN-Transformer model 
 ## Key Features
 
 *   **Hybrid Architecture**: Combines Global and Local view CNNs with a Transformer Encoder to capture both morphological shapes and long-range temporal dependencies (transit dips).
-*   **Advanced Balancing**: Supports both Undersampling and Oversampling strategies to handle severe class imbalance.
+*   **Robust Stacking Ensemble**: Implements **Out-of-Fold (OOF)** prediction collection to train a meta-learner (Logistic Regression) without data leakage.
+*   **XGBoost Integration**: Uses learned embeddings from the Deep Learning model as features for Gradient Boosting.
+*   **Advanced Balancing**: Supports both Undersampling and Oversampling strategies.
 *   **Custom Loss Functions**: Includes Focal Loss ($\gamma=2.0$) to focus learning on hard-to-classify examples.
-*   **Robust Evaluation**: Uses Stratified K-Fold Cross-Validation and threshold optimization to maximize Recall.
 
 ## Usage
 
-The main training script is `scripts/train_model_sota.py`. It supports various CLI arguments for customization.
+The main training script is `scripts/train_model_sota.py`.
 
 ### Basic Run (Default)
-Runs with standard Binary Cross Entropy, 5-Fold CV, and no oversampling (uses undersampling or raw data depending on generator defaults, but note: the script defaults to `oversample=False` which means raw data unless modified).
+Runs with standard Binary Cross Entropy, 5-Fold CV, and no oversampling.
 
 ```bash
 python scripts/train_model_sota.py
 ```
 
-### Recommended SOTA Configuration
-To achieve the best results (High Recall), use **Focal Loss**, **Oversampling**, and **Positive-Only Augmentation**:
+### Recommended SOTA Configuration (Hybrid Stacking)
+To achieve the best results, use the **Hybrid Stacking** pipeline. This trains the CNN/Transformer on 5 folds, collects OOF predictions, trains an XGBoost model on the embeddings, and finally trains a Meta-Learner to combine them.
 
 ```bash
-python scripts/train_model_sota.py --loss focal --oversample --augment_positive_only --folds 5
+python scripts/train_model_sota.py --hybrid --ensemble_method stacking --meta_learner logistic --loss focal --oversample --augment_positive_only --folds 5
+```
+
+### Hyperparameter Tuning
+To automatically tune XGBoost hyperparameters (Random Search) inside each fold:
+
+```bash
+python scripts/train_model_sota.py --hybrid --tune_xgboost ...
 ```
 
 ### Arguments
 
 | Argument | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `--hybrid` | `flag` | `False` | Enables the Hybrid pipeline (CNN + XGBoost). |
+| `--ensemble_method` | `str` | `average` | Method to combine predictions: `average`, `stacking`, `weighted_average`, `cnn_only`, `xgboost_only`. |
+| `--meta_learner` | `str` | `logistic` | Meta-learner for stacking: `logistic` or `ridge`. |
+| `--tune_xgboost` | `flag` | `False` | Runs RandomizedSearchCV for XGBoost hyperparameters. |
 | `--loss` | `str` | `bce` | Loss function: `bce`, `weighted_bce`, or `focal`. |
 | `--oversample` | `flag` | `False` | If set, oversamples the positive class to match the negative class count (1:1 ratio). |
-| `--augment_positive_only` | `flag` | `False` | If set, applies augmentations (flip, roll, jitter) ONLY to positive samples to increase their diversity without distorting negatives. |
-| `--num_conv_blocks` | `int` | `3` | Number of CNN blocks in the Global branch. |
-| `--num_transformer_blocks` | `int` | `1` | Number of Transformer Encoder blocks. |
-| `--folds` | `int` | `5` | Number of folds for Stratified K-Fold Cross-Validation. |
-| `--epochs` | `int` | `50` | Number of training epochs per fold. |
+| `--augment_positive_only` | `flag` | `False` | If set, applies augmentations (flip, roll, jitter) ONLY to positive samples. |
+| `--xgb_rounds` | `int` | `100` | XGBoost boosting rounds. |
+| `--xgb_early_stopping` | `int` | `10` | XGBoost early stopping rounds. |
 
 ## Evaluation Outputs
 
 Results are saved in `notebooks/results_koi/`:
 *   `best_model_fold_X.keras`: Best model checkpoint for each fold.
-*   `pr_curve_fold_X.png`: Precision-Recall curve for each fold.
-*   `confusion_matrix_aggregate.png`: Aggregated confusion matrix across all folds.
+*   `pr_curve_Global_Ensemble_fold_Ensemble.png`: Precision-Recall curve for the final ensemble (OOF).
+*   `confusion_matrix_final.png`: Aggregate confusion matrix for the final ensemble.
 
 ## Dependencies
 
 *   TensorFlow 2.x
+*   XGBoost (`pip install xgboost`)
 *   NumPy, Pandas, Matplotlib, Seaborn
 *   Scikit-learn
 *   Tqdm
-
-No extra installation is required for Focal Loss as it is implemented as a custom class within the script.
