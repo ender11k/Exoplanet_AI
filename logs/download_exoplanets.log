@@ -1,0 +1,19 @@
+2026-01-13 00:56:07,331 - INFO - ============================================================
+2026-01-13 00:56:07,331 - INFO - DOWNLOADING ALL CONFIRMED KEPLER EXOPLANETS
+2026-01-13 00:56:07,331 - INFO - ============================================================
+2026-01-13 00:56:07,331 - INFO - Querying NASA Exoplanet Archive for kepler confirmed planets...
+2026-01-13 00:56:09,799 - ERROR - Error querying NASA Exoplanet Archive: 400 Client Error: ERROR for url: https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=%0A++++++++++++SELECT+pl_name%2C+hostname%2C+kepid%2C+pl_orbper%2C+pl_rade%2C+pl_bmasse%2C%0A+++++++++++++++++++pl_eqt%2C+st_teff%2C+st_rad%2C+st_mass%2C+disc_facility%2C+disc_year%2C%0A+++++++++++++++++++sy_kepmag%2C+pl_trandur%2C+pl_tranmid%0A++++++++++++FROM+ps%0A++++++++++++WHERE+kepid+IS+NOT+NULL+%0A++++++++++++AND+disc_facility+LIKE+%27%25Kepler%25%27%0A++++++++++++AND+default_flag+%3D+1%0A++++++++++++ORDER+BY+kepid%0A++++++++++++&format=csv
+2026-01-13 00:56:09,806 - ERROR - Failed to get confirmed planets list
+2026-01-13 00:56:09,807 - INFO - 
+============================================================
+2026-01-13 00:56:09,807 - INFO - FINAL DATA VERIFICATION
+2026-01-13 00:56:09,808 - INFO - ============================================================
+2026-01-13 00:56:09,808 - INFO - Verifying data quality...
+2026-01-13 00:56:09,809 - INFO - Total files: 0
+2026-01-13 00:56:09,810 - INFO - Valid files: 0
+2026-01-13 00:56:09,810 - INFO - Kepler files: 0
+2026-01-13 00:56:09,811 - INFO - TESS files: 0
+2026-01-13 00:56:09,812 - INFO - Corrupt files: 0
+2026-01-13 00:56:09,813 - INFO - 
+Download complete! Total new files: 0
+2026-01-13 00:56:09,813 - INFO - Report saved to: notebooks\results_confirmed\download_report.json

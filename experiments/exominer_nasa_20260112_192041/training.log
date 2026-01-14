@@ -1,0 +1,23 @@
+2026-01-12 19:20:41,361 | INFO | Starting experiment: exominer_nasa
+2026-01-12 19:20:41,361 | INFO | Output directory: experiments\exominer_nasa_20260112_192041
+2026-01-12 19:20:41,361 | INFO | Loading data...
+2026-01-12 19:23:18,821 | INFO | Found 12806 valid samples
+2026-01-12 19:23:18,822 | INFO | Class distribution: Positive=975, Negative=11831
+2026-01-12 23:15:40,344 | INFO | 
+============================================================
+2026-01-12 23:15:40,344 | INFO | AGGREGATE RESULTS (ALL FOLDS)
+2026-01-12 23:15:40,344 | INFO | ============================================================
+2026-01-12 23:15:41,211 | INFO | ROC-AUC: 0.6990
+2026-01-12 23:15:41,211 | INFO | PR-AUC:  0.1641
+2026-01-12 23:15:41,211 | INFO | Recall@P=0.99: 0.0010
+2026-01-12 23:15:41,211 | INFO | Recall@P=0.95: 0.0010
+2026-01-12 23:15:41,211 | INFO | Optimal F1: 0.2419
+2026-01-12 23:15:41,211 | INFO | 
+Per-Fold Metrics:
+2026-01-12 23:15:41,211 | INFO |   Fold 1: ROC-AUC=0.8070, PR-AUC=0.2545, R@P99=0.0051
+2026-01-12 23:15:41,211 | INFO |   Fold 2: ROC-AUC=0.7641, PR-AUC=0.1974, R@P99=0.0000
+2026-01-12 23:15:41,211 | INFO |   Fold 3: ROC-AUC=0.7845, PR-AUC=0.2349, R@P99=0.0051
+2026-01-12 23:15:41,211 | INFO |   Fold 4: ROC-AUC=0.7560, PR-AUC=0.1700, R@P99=0.0000
+2026-01-12 23:15:41,211 | INFO |   Fold 5: ROC-AUC=0.7732, PR-AUC=0.1861, R@P99=0.0051
+2026-01-12 23:15:41,224 | INFO | 
+Results saved to: experiments\exominer_nasa_20260112_192041
